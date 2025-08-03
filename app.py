@@ -1,148 +1,138 @@
 import streamlit as st
 import pandas as pd
-import os
+import gspread
+from google.oauth2.service_account import Credentials
 from datetime import date
-from openpyxl import load_workbook
-from openpyxl.styles import Alignment
-from openpyxl.utils import get_column_letter
+from io import BytesIO
 
-FILE_PATH = "expenses.xlsx"
+# ✅ Google Sheets Setup
+SHEET_NAME = "Expense Tracker App"
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+creds = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
+client = gspread.authorize(creds)
 
-# ✅ Initialize Sheets
-def initialize_sheets():
-    if not os.path.exists(FILE_PATH):
-        with pd.ExcelWriter(FILE_PATH, engine="openpyxl", mode="w") as writer:
-            pd.DataFrame(columns=["Date", "Amount", "Category", "Notes", "Month"]).to_excel(writer, sheet_name="Expenses", index=False)
-            pd.DataFrame(columns=["Date", "Medicine", "Quantity", "Cost", "Notes"]).to_excel(writer, sheet_name="Medicines", index=False)
-            pd.DataFrame(columns=["Date", "Type", "Amount", "Frequency", "Notes"]).to_excel(writer, sheet_name="Investments", index=False)
-        return
+# ✅ Open or Create Spreadsheet
+try:
+    sheet = client.open(SHEET_NAME)
+except:
+    sheet = client.create(SHEET_NAME)
+    sheet.share(creds.service_account_email, perm_type="user", role="writer")
 
-    wb = load_workbook(FILE_PATH)
-    if "Medicines" not in wb.sheetnames:
-        df = pd.DataFrame(columns=["Date", "Medicine", "Quantity", "Cost", "Notes"])
-        with pd.ExcelWriter(FILE_PATH, engine="openpyxl", mode="a") as writer:
-            df.to_excel(writer, sheet_name="Medicines", index=False)
+# ✅ Ensure Tabs Exist
+def get_or_create_worksheet(name, headers):
+    try:
+        ws = sheet.worksheet(name)
+    except:
+        ws = sheet.add_worksheet(title=name, rows="100", cols=str(len(headers)))
+        ws.append_row(headers)
+    return ws
 
-    if "Investments" not in wb.sheetnames:
-        df = pd.DataFrame(columns=["Date", "Type", "Amount", "Frequency", "Notes"])
-        with pd.ExcelWriter(FILE_PATH, engine="openpyxl", mode="a") as writer:
-            df.to_excel(writer, sheet_name="Investments", index=False)
+expenses_ws = get_or_create_worksheet("Expenses", ["Date", "Amount", "Category", "Notes", "Month"])
+medicines_ws = get_or_create_worksheet("Medicines", ["Date", "Medicine", "Quantity", "Cost", "Notes"])
+investments_ws = get_or_create_worksheet("Investments", ["Date", "Type", "Amount", "Frequency", "Notes"])
+expense_cat_ws = get_or_create_worksheet("ExpenseCategories", ["Category"])
+investment_cat_ws = get_or_create_worksheet("InvestmentCategories", ["Type"])
 
-initialize_sheets()
+# ✅ Helper Functions
+def ws_to_df(ws):
+    data = ws.get_all_records()
+    return pd.DataFrame(data)
 
-# ---------------- Sidebar ----------------
+def df_to_ws(df, ws):
+    ws.clear()
+    ws.append_row(df.columns.tolist())
+    ws.append_rows(df.values.tolist())
+
+# ✅ Load Categories
+def load_expense_categories():
+    df = ws_to_df(expense_cat_ws)
+    if df.empty:
+        default = ["Food", "Transport", "Shopping", "Donation", "Bills", "Other"]
+        expense_cat_ws.append_rows([[c] for c in default])
+        return default
+    return df["Category"].tolist()
+
+def load_investment_categories():
+    df = ws_to_df(investment_cat_ws)
+    if df.empty:
+        default = ["Salary", "SIP", "FD", "Stocks", "Chit Fund", "Other"]
+        investment_cat_ws.append_rows([[c] for c in default])
+        return default
+    return df["Type"].tolist()
+
+# ✅ Download Excel Button
+def download_all_data():
+    with pd.ExcelWriter(BytesIO(), engine="openpyxl") as writer:
+        ws_to_df(expenses_ws).to_excel(writer, sheet_name="Expenses", index=False)
+        ws_to_df(medicines_ws).to_excel(writer, sheet_name="Medicines", index=False)
+        ws_to_df(investments_ws).to_excel(writer, sheet_name="Investments", index=False)
+        writer.save()
+        return writer
+
+# ✅ Sidebar
 st.sidebar.title("📂 Menu")
 menu = st.sidebar.radio("Go to:", ["💸 Expenses", "💊 Medicines", "💰 Investments"])
 
-# ---------------- Expenses Functions ----------------
-def load_expense_data():
-    try:
-        return pd.read_excel(FILE_PATH, sheet_name="Expenses")
-    except:
-        return pd.DataFrame(columns=["Date", "Amount", "Category", "Notes", "Month"])
-
-def save_expense_data(new_row):
-    df = load_expense_data()
-    if not df.empty:
-        df["Date"] = pd.to_datetime(df["Date"]).dt.date
-
-    new_date = pd.to_datetime(new_row["Date"]).date()
-    is_duplicate = (
-        (df["Date"] == new_date) &
-        (df["Amount"] == new_row["Amount"]) &
-        (df["Category"] == new_row["Category"]) &
-        (df["Notes"] == new_row["Notes"])
-    ).any()
-    if is_duplicate:
-        st.warning("⚠️ This entry already exists.")
+# ✅ Display & Edit/Delete Rows
+def show_table_with_actions(df, ws):
+    if df.empty:
+        st.info("No records yet.")
         return
 
-    new_row["Date"] = new_date
-    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-    df["Month"] = pd.to_datetime(df["Date"]).dt.strftime('%B %Y')
+    for i, row in df.iterrows():
+        cols = st.columns([2, 2, 2, 3, 2])
+        for j, val in enumerate(row.values):
+            cols[j].write(val)
 
-    with pd.ExcelWriter(FILE_PATH, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
-        df.to_excel(writer, sheet_name="Expenses", index=False)
+        if cols[3].button("✏️ Edit", key=f"edit_{i}"):
+            with st.form(f"edit_form_{i}"):
+                new_values = []
+                for col_name, value in row.items():
+                    new_val = st.text_input(col_name, str(value))
+                    new_values.append(new_val)
+                submit_edit = st.form_submit_button("Save")
+                if submit_edit:
+                    df.loc[i] = new_values
+                    df_to_ws(df, ws)
+                    st.success("✅ Row updated successfully!")
+                    st.rerun()
 
-    wb = load_workbook(FILE_PATH)
-    ws = wb["Expenses"]
-    for col in ws.columns:
-        max_length = max(len(str(cell.value)) if cell.value else 0 for cell in col)
-        ws.column_dimensions[get_column_letter(col[0].column)].width = max_length + 2
-        for cell in col:
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-    wb.save(FILE_PATH)
-
-# ---------------- Medicines Functions ----------------
-def load_medicines_data():
-    try:
-        return pd.read_excel(FILE_PATH, sheet_name="Medicines")
-    except:
-        return pd.DataFrame(columns=["Date", "Medicine", "Quantity", "Cost", "Notes"])
-
-def save_medicine_data(new_row):
-    df = load_medicines_data()
-    new_row["Date"] = pd.to_datetime(new_row["Date"]).date()
-    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-
-    with pd.ExcelWriter(FILE_PATH, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
-        df.to_excel(writer, sheet_name="Medicines", index=False)
-
-# ---------------- Investments Functions ----------------
-def load_investments_data():
-    try:
-        return pd.read_excel(FILE_PATH, sheet_name="Investments")
-    except:
-        return pd.DataFrame(columns=["Date", "Type", "Amount", "Frequency", "Notes"])
-
-def save_investment_data(new_row):
-    df = load_investments_data()
-    new_row["Date"] = pd.to_datetime(new_row["Date"]).date()
-    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-
-    with pd.ExcelWriter(FILE_PATH, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
-        df.to_excel(writer, sheet_name="Investments", index=False)
+        if cols[4].button("🗑 Delete", key=f"delete_{i}"):
+            df = df.drop(index=i).reset_index(drop=True)
+            df_to_ws(df, ws)
+            st.success("✅ Row deleted successfully!")
+            st.rerun()
 
 # ---------------- Expenses Tab ----------------
 if menu == "💸 Expenses":
     st.title("💸 Expense Tracker")
 
+    expense_categories = load_expense_categories()
+    category = st.selectbox("Category", expense_categories)
+
+    new_cat = st.text_input("➕ Add New Category")
+    if st.button("Add Category"):
+        if new_cat and new_cat not in expense_categories:
+            expense_cat_ws.append_row([new_cat])
+            st.success("✅ Category added!")
+            st.rerun()
+
     with st.form("expense_form"):
         exp_date = st.date_input("Date", value=date.today())
         amount = st.number_input("Amount (₹)", min_value=0.0, step=10.0)
-        category = st.selectbox("Category", ["Food", "Transport", "Shopping", "Donation", "Bills", "Other"])
         notes = st.text_input("Notes (optional)")
         submit = st.form_submit_button("Add Expense")
 
     if submit and amount > 0:
-        save_expense_data({"Date": exp_date, "Amount": amount, "Category": category, "Notes": notes})
+        df = ws_to_df(expenses_ws)
+        new_row = [str(exp_date), amount, category, notes, exp_date.strftime("%B %Y")]
+        df.loc[len(df)] = new_row
+        df_to_ws(df, expenses_ws)
         st.success("✅ Expense added successfully!")
 
-    st.header("📊 Filtered Expenses by Month")
-    df = load_expense_data()
-    if not df.empty:
-        df["Date"] = pd.to_datetime(df["Date"])
-        df["Month"] = df["Date"].dt.strftime("%B %Y")
-        months = df["Month"].unique()
-        selected_month = st.selectbox("Select Month", sorted(months, reverse=True))
-        filtered_df = df[df["Month"] == selected_month].copy().reset_index(drop=True)
-
-        st.markdown("### Entries")
-        for i, row in filtered_df.iterrows():
-            cols = st.columns([2, 2, 2, 3, 1])
-            cols[0].write(row["Date"].strftime("%Y-%m-%d"))
-            cols[1].write(f"₹{row['Amount']}")
-            cols[2].write(row["Category"])
-            cols[3].write(row["Notes"])
-            if cols[4].button("🗑", key=f"delete_{i}"):
-                df = df.drop(index=i)
-                with pd.ExcelWriter(FILE_PATH, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
-                    df.to_excel(writer, sheet_name="Expenses", index=False)
-                st.rerun()
-
-        st.markdown(f"**Total Spent in {selected_month}: ₹{filtered_df['Amount'].sum():.2f}**")
-    else:
-        st.info("No expenses recorded yet.")
+    st.header("📊 Expenses Table")
+    df = ws_to_df(expenses_ws)
+    show_table_with_actions(df, expenses_ws)
 
 # ---------------- Medicines Tab ----------------
 if menu == "💊 Medicines":
@@ -157,55 +147,50 @@ if menu == "💊 Medicines":
         submit_med = st.form_submit_button("Add Medicine")
 
     if submit_med:
-        save_medicine_data({"Date": med_date, "Medicine": med_name, "Quantity": quantity, "Cost": cost, "Notes": notes})
+        df = ws_to_df(medicines_ws)
+        df.loc[len(df)] = [str(med_date), med_name, quantity, cost, notes]
+        df_to_ws(df, medicines_ws)
         st.success("✅ Medicine added successfully!")
 
-    st.header("📋 Medicine Records")
-    med_df = load_medicines_data()
-    if not med_df.empty:
-        st.dataframe(med_df)
-    else:
-        st.info("No medicines recorded yet.")
+    st.header("📋 Medicines Table")
+    show_table_with_actions(ws_to_df(medicines_ws), medicines_ws)
 
 # ---------------- Investments Tab ----------------
 if menu == "💰 Investments":
     st.title("💰 Investments Tracker")
 
+    investment_categories = load_investment_categories()
+    inv_type = st.selectbox("Investment Type", investment_categories)
+
+    new_inv = st.text_input("➕ Add New Investment Type")
+    if st.button("Add Investment Type"):
+        if new_inv and new_inv not in investment_categories:
+            investment_cat_ws.append_row([new_inv])
+            st.success("✅ Investment type added!")
+            st.rerun()
+
     with st.form("investment_form"):
         inv_date = st.date_input("Date", value=date.today())
-        inv_type = st.selectbox("Investment Type", ["Salary", "SIP", "FD", "Stocks", "Chit Fund", "Other"])
         amount = st.number_input("Amount (₹)", min_value=0.0, step=100.0)
         frequency = st.selectbox("Frequency", ["One-time", "Monthly", "Quarterly"])
         notes = st.text_input("Notes (optional)")
         submit_inv = st.form_submit_button("Add Investment")
 
     if submit_inv:
-        save_investment_data({"Date": inv_date, "Type": inv_type, "Amount": amount, "Frequency": frequency, "Notes": notes})
+        df = ws_to_df(investments_ws)
+        df.loc[len(df)] = [str(inv_date), inv_type, amount, frequency, notes]
+        df_to_ws(df, investments_ws)
         st.success("✅ Investment added successfully!")
 
-    st.header("📋 Investment Records")
-    inv_df = load_investments_data()
-    if not inv_df.empty:
-        st.dataframe(inv_df)
+    st.header("📋 Investments Table")
+    show_table_with_actions(ws_to_df(investments_ws), investments_ws)
 
-        # 📊 Salary & Savings Summary
-        inv_df["Date"] = pd.to_datetime(inv_df["Date"])
-        inv_df["Month"] = inv_df["Date"].dt.strftime("%B %Y")
-        selected_month = st.selectbox("📅 Select Month for Summary", sorted(inv_df["Month"].unique(), reverse=True))
-
-        month_df = inv_df[inv_df["Month"] == selected_month]
-        total_salary = month_df[month_df["Type"] == "Salary"]["Amount"].sum()
-        total_investments = month_df[month_df["Type"] != "Salary"]["Amount"].sum()
-
-        st.metric("💰 Total Salary", f"₹{total_salary:,.2f}")
-        st.metric("📈 Total Investments", f"₹{total_investments:,.2f}")
-
-        exp_df = load_expense_data()
-        exp_df["Date"] = pd.to_datetime(exp_df["Date"])
-        exp_df["Month"] = exp_df["Date"].dt.strftime("%B %Y")
-        total_expenses = exp_df[exp_df["Month"] == selected_month]["Amount"].sum()
-
-        savings = total_salary - (total_investments + total_expenses)
-        st.metric("💵 Savings", f"₹{savings:,.2f}")
-    else:
-        st.info("No investments recorded yet.")
+# ---------------- Download Button ----------------
+st.sidebar.header("📥 Backup Data")
+if st.sidebar.button("Download Excel Backup"):
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        ws_to_df(expenses_ws).to_excel(writer, sheet_name="Expenses", index=False)
+        ws_to_df(medicines_ws).to_excel(writer, sheet_name="Medicines", index=False)
+        ws_to_df(investments_ws).to_excel(writer, sheet_name="Investments", index=False)
+    st.sidebar.download_button("Download File", buffer.getvalue(), "expense_tracker_backup.xlsx")
