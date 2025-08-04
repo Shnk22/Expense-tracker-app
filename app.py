@@ -4,12 +4,16 @@ import gspread
 from google.oauth2.service_account import Credentials
 from datetime import date
 from io import BytesIO
+import json
 
-# ✅ Google Sheets Setup
-SHEET_NAME = "Expense Tracker App"
+# ✅ Load credentials from Streamlit Secrets
+creds_dict = dict(st.secrets["google_credentials"])
+
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
-creds = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
+creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 client = gspread.authorize(creds)
+
+SHEET_NAME = "Expense Tracker App"
 
 # ✅ Open or Create Spreadsheet
 try:
@@ -60,20 +64,17 @@ def load_investment_categories():
         return default
     return df["Type"].tolist()
 
-# ✅ Download Excel Button
+# ✅ Download Excel Backup
 def download_all_data():
-    with pd.ExcelWriter(BytesIO(), engine="openpyxl") as writer:
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         ws_to_df(expenses_ws).to_excel(writer, sheet_name="Expenses", index=False)
         ws_to_df(medicines_ws).to_excel(writer, sheet_name="Medicines", index=False)
         ws_to_df(investments_ws).to_excel(writer, sheet_name="Investments", index=False)
-        writer.save()
-        return writer
+    buffer.seek(0)
+    return buffer
 
-# ✅ Sidebar
-st.sidebar.title("📂 Menu")
-menu = st.sidebar.radio("Go to:", ["💸 Expenses", "💊 Medicines", "💰 Investments"])
-
-# ✅ Display & Edit/Delete Rows
+# ✅ Display Table with Edit/Delete
 def show_table_with_actions(df, ws):
     if df.empty:
         st.info("No records yet.")
@@ -103,6 +104,18 @@ def show_table_with_actions(df, ws):
             st.success("✅ Row deleted successfully!")
             st.rerun()
 
+# ---------------- Sidebar ----------------
+st.sidebar.title("📂 Menu")
+menu = st.sidebar.radio("Go to:", ["💸 Expenses", "💊 Medicines", "💰 Investments"])
+
+st.sidebar.header("📥 Backup Data")
+if st.sidebar.button("Download Excel Backup"):
+    st.sidebar.download_button(
+        "Download File",
+        download_all_data(),
+        "expense_tracker_backup.xlsx"
+    )
+
 # ---------------- Expenses Tab ----------------
 if menu == "💸 Expenses":
     st.title("💸 Expense Tracker")
@@ -131,8 +144,7 @@ if menu == "💸 Expenses":
         st.success("✅ Expense added successfully!")
 
     st.header("📊 Expenses Table")
-    df = ws_to_df(expenses_ws)
-    show_table_with_actions(df, expenses_ws)
+    show_table_with_actions(ws_to_df(expenses_ws), expenses_ws)
 
 # ---------------- Medicines Tab ----------------
 if menu == "💊 Medicines":
@@ -184,13 +196,3 @@ if menu == "💰 Investments":
 
     st.header("📋 Investments Table")
     show_table_with_actions(ws_to_df(investments_ws), investments_ws)
-
-# ---------------- Download Button ----------------
-st.sidebar.header("📥 Backup Data")
-if st.sidebar.button("Download Excel Backup"):
-    buffer = BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        ws_to_df(expenses_ws).to_excel(writer, sheet_name="Expenses", index=False)
-        ws_to_df(medicines_ws).to_excel(writer, sheet_name="Medicines", index=False)
-        ws_to_df(investments_ws).to_excel(writer, sheet_name="Investments", index=False)
-    st.sidebar.download_button("Download File", buffer.getvalue(), "expense_tracker_backup.xlsx")
