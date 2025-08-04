@@ -7,9 +7,9 @@ from io import BytesIO
 import json
 
 # ✅ Load credentials from Streamlit Secrets
-creds_dict = dict(st.secrets["google_credentials"])
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+creds_dict = dict(st.secrets["google_credentials"])
 creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 client = gspread.authorize(creds)
 
