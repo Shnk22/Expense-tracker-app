@@ -4,29 +4,31 @@ import gspread
 from google.oauth2.service_account import Credentials
 from datetime import date
 from io import BytesIO
-import json
 
-# ✅ Load credentials from Streamlit Secrets
-
+# ---------------- Google Sheets Credentials ----------------
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+
+# Make a copy of secrets and fix the private key newlines
 creds_dict = dict(st.secrets["google_credentials"])
+creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+
 creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 client = gspread.authorize(creds)
 
 SHEET_NAME = "Expense Tracker App"
 
-# ✅ Open or Create Spreadsheet
+# ---------------- Open or Create Spreadsheet ----------------
 try:
     sheet = client.open(SHEET_NAME)
-except:
+except gspread.SpreadsheetNotFound:
     sheet = client.create(SHEET_NAME)
     sheet.share(creds.service_account_email, perm_type="user", role="writer")
 
-# ✅ Ensure Tabs Exist
+# ---------------- Ensure Tabs Exist ----------------
 def get_or_create_worksheet(name, headers):
     try:
         ws = sheet.worksheet(name)
-    except:
+    except gspread.WorksheetNotFound:
         ws = sheet.add_worksheet(title=name, rows="100", cols=str(len(headers)))
         ws.append_row(headers)
     return ws
@@ -37,7 +39,7 @@ investments_ws = get_or_create_worksheet("Investments", ["Date", "Type", "Amount
 expense_cat_ws = get_or_create_worksheet("ExpenseCategories", ["Category"])
 investment_cat_ws = get_or_create_worksheet("InvestmentCategories", ["Type"])
 
-# ✅ Helper Functions
+# ---------------- Helper Functions ----------------
 def ws_to_df(ws):
     data = ws.get_all_records()
     return pd.DataFrame(data)
@@ -47,7 +49,6 @@ def df_to_ws(df, ws):
     ws.append_row(df.columns.tolist())
     ws.append_rows(df.values.tolist())
 
-# ✅ Load Categories
 def load_expense_categories():
     df = ws_to_df(expense_cat_ws)
     if df.empty:
@@ -64,7 +65,6 @@ def load_investment_categories():
         return default
     return df["Type"].tolist()
 
-# ✅ Download Excel Backup
 def download_all_data():
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -74,7 +74,6 @@ def download_all_data():
     buffer.seek(0)
     return buffer
 
-# ✅ Display Table with Edit/Delete
 def show_table_with_actions(df, ws):
     if df.empty:
         st.info("No records yet.")
@@ -119,13 +118,12 @@ if st.sidebar.button("Download Excel Backup"):
 # ---------------- Expenses Tab ----------------
 if menu == "💸 Expenses":
     st.title("💸 Expense Tracker")
-
     expense_categories = load_expense_categories()
     category = st.selectbox("Category", expense_categories)
 
     new_cat = st.text_input("➕ Add New Category")
     if st.button("Add Category"):
-        if new_cat and new_cat not in expense_categories:
+        if new_cat.strip() and new_cat not in expense_categories:
             expense_cat_ws.append_row([new_cat])
             st.success("✅ Category added!")
             st.rerun()
@@ -158,7 +156,7 @@ if menu == "💊 Medicines":
         notes = st.text_input("Notes (optional)")
         submit_med = st.form_submit_button("Add Medicine")
 
-    if submit_med:
+    if submit_med and med_name.strip():
         df = ws_to_df(medicines_ws)
         df.loc[len(df)] = [str(med_date), med_name, quantity, cost, notes]
         df_to_ws(df, medicines_ws)
@@ -170,13 +168,12 @@ if menu == "💊 Medicines":
 # ---------------- Investments Tab ----------------
 if menu == "💰 Investments":
     st.title("💰 Investments Tracker")
-
     investment_categories = load_investment_categories()
     inv_type = st.selectbox("Investment Type", investment_categories)
 
     new_inv = st.text_input("➕ Add New Investment Type")
     if st.button("Add Investment Type"):
-        if new_inv and new_inv not in investment_categories:
+        if new_inv.strip() and new_inv not in investment_categories:
             investment_cat_ws.append_row([new_inv])
             st.success("✅ Investment type added!")
             st.rerun()
@@ -188,7 +185,7 @@ if menu == "💰 Investments":
         notes = st.text_input("Notes (optional)")
         submit_inv = st.form_submit_button("Add Investment")
 
-    if submit_inv:
+    if submit_inv and amount > 0:
         df = ws_to_df(investments_ws)
         df.loc[len(df)] = [str(inv_date), inv_type, amount, frequency, notes]
         df_to_ws(df, investments_ws)
