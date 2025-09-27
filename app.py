@@ -6,12 +6,14 @@ from datetime import date
 from io import BytesIO
 
 # ---------------- Google Sheets Credentials ----------------
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
+           "https://www.googleapis.com/auth/drive.readonly"]
 
-# Make a copy of secrets and fix the private key newlines
+# Load credentials from secrets.toml
 creds_dict = dict(st.secrets["google_credentials"])
 creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
 
+# Authorize client
 creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 client = gspread.authorize(creds)
 
@@ -26,6 +28,7 @@ except gspread.SpreadsheetNotFound:
 
 # ---------------- Ensure Tabs Exist ----------------
 def get_or_create_worksheet(name, headers):
+    """Fetch a worksheet or create it if it doesn't exist"""
     try:
         ws = sheet.worksheet(name)
     except gspread.WorksheetNotFound:
@@ -75,6 +78,7 @@ def download_all_data():
     return buffer
 
 def show_table_with_actions(df, ws):
+    """Display a table with Edit and Delete buttons"""
     if df.empty:
         st.info("No records yet.")
         return
@@ -84,6 +88,7 @@ def show_table_with_actions(df, ws):
         for j, val in enumerate(row.values):
             cols[j].write(val)
 
+        # Edit Button
         if cols[3].button("✏️ Edit", key=f"edit_{i}"):
             with st.form(f"edit_form_{i}"):
                 new_values = []
@@ -97,6 +102,7 @@ def show_table_with_actions(df, ws):
                     st.success("✅ Row updated successfully!")
                     st.rerun()
 
+        # Delete Button
         if cols[4].button("🗑 Delete", key=f"delete_{i}"):
             df = df.drop(index=i).reset_index(drop=True)
             df_to_ws(df, ws)
